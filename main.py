@@ -4,74 +4,44 @@ import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.preprocessing import MinMaxScaler
+import matplotlib.pyplot as plt
 
-# .csv 파일 읽어오기
-bitcoin_df = pd.read_csv('bit_learn_7_2.csv')
-nasdaq_df = pd.read_csv('nas_learn_7_2.csv')
+# 데이터 로드 및 전처리
+def load_and_preprocess_data():
+    bitcoin_df = pd.read_csv('bit_learn_7_2.csv')
+    nasdaq_df = pd.read_csv('nas_learn_7_2.csv')
 
-# 시간 정보를 datetime으로 변환
-bitcoin_df['time'] = pd.to_datetime(bitcoin_df['time'])
-nasdaq_df['time'] = pd.to_datetime(nasdaq_df['time'])
+    bitcoin_df['time'] = pd.to_datetime(bitcoin_df['time'])
+    nasdaq_df['time'] = pd.to_datetime(nasdaq_df['time'])
 
-# 두 데이터 프레임을 시간에 따라 결합
-merged_df = pd.merge(bitcoin_df, nasdaq_df, on='time', suffixes=('_btc', '_nasdaq'))
+    merged_df = pd.merge(bitcoin_df, nasdaq_df, on='time', suffixes=('_btc', '_nasdaq'))
 
-# Normalization
-scaler = MinMaxScaler()
-scaled_data = scaler.fit_transform(merged_df.iloc[:, 1:])  # 시간 제외한 나머지 데이터를 스케일링
+    scaler = MinMaxScaler()
+    scaled_data = scaler.fit_transform(merged_df.iloc[:, 1:])
 
+    return scaled_data, scaler
 
-# 각각의 데이터를 시퀀스로 분할하고 라벨 생성
-# def create_sequences_and_labels(data, seq_length):
-#     sequences = []
-#     labels = []
-#     for i in range(len(data) - seq_length - 10):
-#         sequences.append(data[i:i + seq_length])
-#         next_values = data[i + seq_length:i + seq_length + 10, 3]  # 종가
-#         initial_price = next_values[0]
-#         max_price = np.max(next_values)
-#         min_price = np.min(next_values)
-#         if max_price >= initial_price * 1.01 and max_price <= initial_price * 0.99:
-#             labels.append(0)  # 횡보
-#         elif max_price >= initial_price * 1.01:
-#             labels.append(1)  # 상승
-#         else:
-#             labels.append(2)  # 하락
-#     return np.array(sequences), np.array(labels)
+# 시퀀스 및 레이블 생성
 def create_sequences_and_labels(data, seq_length):
     sequences = []
     labels = []
     for i in range(len(data) - seq_length - 10):
         sequences.append(data[i:i + seq_length])
-        next_values = data[i + seq_length:i + seq_length + 10, 3]  # 종가
+        next_values = data[i + seq_length:i + seq_length + 10, 3]
         initial_price = next_values[0]
-        label = 0  # 초기값은 횡보로 설정
+        label = 0
         for next_price in next_values:
-            if next_price >= initial_price * 1.01:  # 1% 이상 상승 시
+            if next_price >= initial_price * 1.01:
                 label = 1
                 break
-            elif next_price <= initial_price * 0.99:  # 1% 이상 하락 시
+            elif next_price <= initial_price * 0.99:
                 label = 2
                 break
         labels.append(label)
+
     return np.array(sequences), np.array(labels)
 
-
-//
-seq_length = 50
-sequences, labels = create_sequences_and_labels(scaled_data, seq_length)
-
-# Tensor 변환
-sequences_tensor = torch.Tensor(sequences)
-labels_tensor = torch.LongTensor(labels)
-
-# DataLoader 생성
-batch_size = 64
-dataset = TensorDataset(sequences_tensor, labels_tensor)
-dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
-
-# LSTM 모델
+# LSTM 모델 정의
 class LSTMModel(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers, num_classes):
         super(LSTMModel, self).__init__()
@@ -79,6 +49,7 @@ class LSTMModel(nn.Module):
         self.num_layers = num_layers
         self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
         self.fc = nn.Linear(hidden_size, num_classes)
+
 
     def forward(self, x):
         h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
@@ -88,131 +59,152 @@ class LSTMModel(nn.Module):
         return out
 
 
-# 모델 생성
-input_size = scaled_data.shape[1]
-hidden_size = 84
-num_layers = 2
-num_classes = 3
-model = LSTMModel(input_size, hidden_size, num_layers, num_classes)
+# 모델 학습
+def train_model(model, criterion, optimizer, dataloader, num_epochs):
+    loss_values = []
+
+    for epoch in range(num_epochs):
+        total_loss = 0
+        for sequences_batch, labels_batch in dataloader:
+            outputs = model(sequences_batch)
+            loss = criterion(outputs, labels_batch)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+
+        avg_loss = total_loss / len(dataloader)
+        loss_values.append(avg_loss)
+        print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {avg_loss:.4f}')
+
+    return loss_values
 
 
-criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(model.parameters())
-
-# 학습
-num_epochs = 100
-loss_values = []  # loss를 저장할 list
-for epoch in range(num_epochs):
-    total_loss = 0
-    total_batches = 0
-    for i, (sequences_batch, labels_batch) in enumerate(dataloader):
-        outputs = model(sequences_batch)
-        loss = criterion(outputs, labels_batch)
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        total_loss += loss.item()
-        total_batches += 1
-
-    avg_loss = total_loss / total_batches
-    loss_values.append(avg_loss)
-    print(f'Epoch {epoch + 1}/{num_epochs}, Loss: {avg_loss:.4f}')
-
-# 모델의 가중치 저장
-torch.save(model.state_dict(), 'model_weights_13.pth')
-
-# Loss curve
-import matplotlib.pyplot as plt
-
-plt.plot(loss_values)
-plt.title('Training Loss Curve')
-plt.xlabel('Epoch')
-plt.ylabel('Loss')
-plt.show()
 
 
-bitcoin_test_df = pd.read_csv('bit_test_3.csv')
-nasdaq_test_df = pd.read_csv('nas_test_3.csv')
 
 
-bitcoin_test_df['time'] = pd.to_datetime(bitcoin_test_df['time'])
-nasdaq_test_df['time'] = pd.to_datetime(nasdaq_test_df['time'])
+"""테스트 데이터 로딩 및 전처리를 위한 함수"""
+def load_test_data(test_file_names, seq_length, scaler):
 
-merged_test_df = pd.merge(bitcoin_test_df, nasdaq_test_df, on='time', suffixes=('_btc', '_nasdaq'))
+    # 데이터 파일에서 테스트 데이터 로드
+    bitcoin_test_df = pd.read_csv(test_file_names[0])
+    nasdaq_test_df = pd.read_csv(test_file_names[1])
 
-# Normalization
+    # 시간 정보 변환
+    bitcoin_test_df['time'] = pd.to_datetime(bitcoin_test_df['time'])
+    nasdaq_test_df['time'] = pd.to_datetime(nasdaq_test_df['time'])
 
-scaled_test_data = scaler.transform(merged_test_df.iloc[:, 1:])
+    # 데이터 병합
+    merged_test_df = pd.merge(bitcoin_test_df, nasdaq_test_df, on='time', suffixes=('_btc', '_nasdaq'))
+
+    # 정규화
+    scaled_test_data = scaler.transform(merged_test_df.iloc[:, 1:])
+
+    # 시퀀스 및 라벨 생성
+    test_sequences, test_labels = create_sequences_and_labels(scaled_test_data, seq_length)
+
+    # 텐서로 변환
+    test_sequences_tensor = torch.Tensor(test_sequences)
+    test_labels_tensor = torch.LongTensor(test_labels)
+
+    return test_sequences_tensor, test_labels_tensor
+
+"""모델 평가를 위한 함수"""
+def evaluate(model, test_sequences_tensor, test_labels_tensor, loss_function, hidden_size, seq_length, loss_values):
+
+    model.eval()  # 모델을 평가 모드로 설정
+    correct_predictions = [0, 0, 0]
+    total_predictions = [0, 0, 0]
+
+    actuals = []
+    losses = []
+
+    with torch.no_grad():
+        for i in range(len(test_sequences_tensor)):
+            test_sequence = test_sequences_tensor[i].unsqueeze(0)  # 배치 차원 추가
+            output = model(test_sequence)
+
+            _, predicted = torch.max(output.data, 1)  # 확률이 가장 높은 레이블 가져오기
+            actual_label = test_labels_tensor[i].item()
+
+            print(f'Test Data {i+1}: Predicted Label: {predicted.item()}, Actual Label: {actual_label}')
+
+            # 예측 결과 계산
+            total_predictions[predicted.item()] += 1
+            if predicted.item() == actual_label:
+                correct_predictions[predicted.item()] += 1
+            actuals.append(actual_label)
+
+            # 손실 계산
+            loss = loss_function(output, test_labels_tensor[i].unsqueeze(0))
+            losses.append(loss.item())
+
+    # 각 라벨에 대한 예측 횟수와 맞춘 비율 출력
+    for i in range(3):
+        if total_predictions[i] > 0:
+            accuracy = correct_predictions[i] / total_predictions[i] * 100
+        else:
+            accuracy = 0
+        print(f'Label {i}: Total Predictions: {total_predictions[i]}, Correct Predictions: {correct_predictions[i]}, Accuracy: {accuracy:.2f}%')
+
+    print(f'hiddensize: {hidden_size} seq_length: {seq_length}')
+    print(f'Final Loss: {sum(losses) / len(losses):.4f}')  # 모든 테스트 데이터에 대한 평균 손실 출력
 
 
-test_sequences, test_labels = create_sequences_and_labels(scaled_test_data, seq_length)
-
-# 텐서로 변환
-test_sequences_tensor = torch.Tensor(test_sequences)
-test_labels_tensor = torch.LongTensor(test_labels)
-
-# 모델 가중치 불러오기
-model.load_state_dict(torch.load('model_weights_13.pth'))
-
-# 평가
-model.eval()
-
-#
-# with torch.no_grad():
-#     outputs = model(test_sequences_tensor)
-#
-#
-# _, predicted = torch.max(outputs.data, 1)
-#
-#
-# correct = (predicted == test_labels_tensor).sum().item()
-# accuracy = correct / len(test_labels_tensor)
-#
-# print(f'Test Accuracy: {accuracy * 100}%')
-
-# 예측 수행
-# with torch.no_grad():
-#     for i in range(len(test_sequences_tensor)):
-#         test_sequence = test_sequences_tensor[i].unsqueeze(0) # 배치 차원 추가
-#         output = model(test_sequence)
-#
-#         # 가장 높은 확률의 레이블
-#         _, predicted = torch.max(output.data, 1)
-#
-#
-#         actual_label = test_labels_tensor[i]
-#
-#         print(f'Test Data {i+1}: Predicted Label: {predicted.item()}, Actual Label: {actual_label.item()}')
 
 
-# 예측 수행 및 통계 계산
-total_predictions = [0, 0, 0]
-correct_predictions = [0, 0, 0]
+def main():
+    # 데이터 로드 및 전처리
+    scaled_data, scaler = load_and_preprocess_data()
 
-with torch.no_grad():
-    for i in range(len(test_sequences_tensor)):
-        test_sequence = test_sequences_tensor[i].unsqueeze(0)  # 배치 차원 추가
-        output = model(test_sequence)
+    seq_length = 50
+    sequences, labels = create_sequences_and_labels(scaled_data, seq_length)
 
-        # 가장 높은 확률의 레이블
-        _, predicted = torch.max(output.data, 1)
+    sequences_tensor = torch.Tensor(sequences)
+    labels_tensor = torch.LongTensor(labels)
 
-        actual_label = test_labels_tensor[i]
+    batch_size = 64
+    dataset = TensorDataset(sequences_tensor, labels_tensor)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-        print(f'Test Data {i+1}: Predicted Label: {predicted.item()}, Actual Label: {actual_label.item()}')
+    # 모델 설정
+    input_size = scaled_data.shape[1]
+    hidden_size = 64
+    num_layers = 2
+    num_classes = 3
 
-        total_predictions[predicted.item()] += 1
-        if predicted.item() == actual_label.item():
-            correct_predictions[predicted.item()] += 1
+    model = LSTMModel(input_size, hidden_size, num_layers, num_classes)
 
-# 각 라벨에 대한 예측 횟수와 맞춘 비율 출력
-for i in range(3):
-    if total_predictions[i] > 0:
-        accuracy = correct_predictions[i] / total_predictions[i]
-    else:
-        accuracy = 0
-    print(f'Label {i}: Total Predictions: {total_predictions[i]}, Correct Predictions: {correct_predictions[i]}, Accuracy: {accuracy * 100}%')
-print(f'hiddensize:{hidden_size} seq_length:{seq_length}')
-print(f'Final Loss: {loss_values[-1]:.4f}')
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters())
+
+    # 모델 학습
+    num_epochs = 1
+    loss_values = train_model(model, criterion, optimizer, dataloader, num_epochs)
+
+    # 결과 시각화
+    plt.plot(loss_values)
+    plt.title('Training Loss Curve')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.show()
+
+    # 모델 가중치 저장
+    torch.save(model.state_dict(), 'model_weights.pth')
+
+    # 테스트 데이터 로드
+    test_file_names = ['bit_test_3.csv', 'nas_test_3.csv']
+    test_sequences_tensor, test_labels_tensor = load_test_data(test_file_names, seq_length, scaler)
+
+    # 모델 가중치 불러오기
+    model.load_state_dict(torch.load('model_weights_12.pth'))
+
+    final_loss = evaluate(model, test_sequences_tensor, test_labels_tensor, criterion, hidden_size, seq_length, loss_values)
+
+
+
+if __name__ == "__main__":
+    main()
